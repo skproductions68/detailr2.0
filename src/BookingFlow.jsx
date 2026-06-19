@@ -247,6 +247,9 @@ export default function BookingFlow({ shop, onSubmit }) {
   const canGo2 = form.vehicle.make && form.vehicle.model && form.vehicle.reg;
   const canSubmit = form.date && form.packageId && !isFull && form.customer.name && form.customer.phone;
 
+  // Each step should start at its heading, not wherever the Next button was.
+  useEffect(() => { window.scrollTo(0, 0); }, [step]);
+
   return (
     <div className="max-w-4xl mx-auto pt-20 px-6 pb-24">
       {/* Header */}

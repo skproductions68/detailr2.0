@@ -115,7 +115,7 @@ const WelcomeScreen = ({ settings, packages, onBook, onTrack }) => {
         </div>
 
         {/* Title with gloss sweep */}
-        <h1 className="anim-fadeup d2 gloss-title display tracking-tight text-[clamp(3.2rem,11vw,8.5rem)] leading-[0.88] text-center mb-4">
+        <h1 className="anim-fadeup d2 gloss-title display tracking-tight text-[clamp(1.8rem,7.5vw,3rem)] md:text-[clamp(3.5rem,9.5vw,8.4rem)] leading-[0.92] md:leading-[0.88] text-center mb-4 px-2 max-w-full">
           {(settings?.shop_name || "Detailr").toUpperCase()}
         </h1>
 
@@ -550,8 +550,8 @@ export default function App() {
         <Menu size={18} />
       </button>
 
-      {/* Home indicator */}
-      {view !== "home" && (
+      {/* Home indicator (hidden on admin — its own top bar already shows the shop) */}
+      {view !== "home" && view !== "admin" && (
         <button
           onClick={() => setView("home")}
           className="fixed top-5 right-5 z-30 px-3 py-2 glass hover:border-white/40 text-white text-[10px] font-mono uppercase tracking-widest transition-colors print:hidden"
