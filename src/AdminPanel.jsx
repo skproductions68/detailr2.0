@@ -3,7 +3,7 @@
 // admin-configurable table — vehicles, packages, addons, stages,
 // panels, and shop settings.
 
-import { useState, useMemo, useEffect, lazy, Suspense } from "react";
+import { useState, useMemo, useEffect, useRef, lazy, Suspense } from "react";
 import {
   LogOut, Droplets, Wind, Sparkles, Trash2, Plus, Save, X, ArrowUp, ArrowDown,
   Car, Package, Tag, ListOrdered, Layers, SlidersHorizontal, LayoutGrid, Settings as Cog,
@@ -62,8 +62,6 @@ const Btn = ({ children, primary, onClick, danger, className = "", disabled, ico
 // ═══════════════════════════════════════════════════════════
 
 const PipelineTab = ({ bookings, stages, packages, settings }) => {
-  const [dropZone, setDropZone] = useState(null);
-
   const stageNames = stages.map((s) => s.name);
 
   const stats = useMemo(() => {
@@ -92,6 +90,128 @@ const PipelineTab = ({ bookings, stages, packages, settings }) => {
     if (error) toast("Failed to delete: " + error.message, "err");
   };
 
+  // Touch devices also get a guaranteed per-card stage menu as a fallback.
+  const [isTouch, setIsTouch] = useState(false);
+  useEffect(() => {
+    setIsTouch(
+      typeof window !== "undefined" &&
+      (("ontouchstart" in window) || (navigator.maxTouchPoints || 0) > 0 ||
+       !!window.matchMedia?.("(pointer: coarse)").matches)
+    );
+  }, []);
+
+  // ── Custom drag-and-drop that works on mouse AND touch ──────
+  // Native HTML5 DnD never fires on touchscreens, so we track the
+  // pointer ourselves: press-and-hold to lift on touch (instant on
+  // mouse), a floating card follows the pointer, and the booking
+  // drops onto whichever stage column sits under it.
+  const boardRef = useRef(null);
+  const cloneRef = useRef(null);
+  const sessionRef = useRef(null);
+  const posRef = useRef({ x: 0, y: 0 });
+  const rafRef = useRef(0);
+  const [dragId, setDragId] = useState(null);
+  const [dragCard, setDragCard] = useState(null);
+  const [overStage, setOverStage] = useState(null);
+
+  const columnAt = (x, y) => {
+    const board = boardRef.current;
+    if (!board) return null;
+    for (const col of board.querySelectorAll("[data-stage]")) {
+      const r = col.getBoundingClientRect();
+      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom)
+        return col.getAttribute("data-stage");
+    }
+    return null;
+  };
+
+  const moveClone = (x, y) => {
+    if (cloneRef.current)
+      cloneRef.current.style.transform = `translate(${x}px, ${y}px) translate(-50%, -130%)`;
+  };
+
+  const autoScroll = () => {
+    const board = boardRef.current;
+    const s = sessionRef.current;
+    if (!board || !s || !s.started) { rafRef.current = 0; return; }
+    const r = board.getBoundingClientRect();
+    const EDGE = 56, STEP = 16;
+    const { x } = posRef.current;
+    if (x < r.left + EDGE) board.scrollLeft -= STEP;
+    else if (x > r.right - EDGE) board.scrollLeft += STEP;
+    rafRef.current = requestAnimationFrame(autoScroll);
+  };
+
+  const liftCard = () => {
+    const s = sessionRef.current;
+    if (!s || s.started) return;
+    s.started = true;
+    setDragId(s.id);
+    setDragCard({ label: s.label, sub: s.sub });
+    moveClone(posRef.current.x, posRef.current.y);
+    setOverStage(columnAt(posRef.current.x, posRef.current.y));
+    if (!rafRef.current) rafRef.current = requestAnimationFrame(autoScroll);
+  };
+
+  useEffect(() => {
+    const onMove = (e) => {
+      const s = sessionRef.current;
+      if (!s) return;
+      posRef.current = { x: e.clientX, y: e.clientY };
+      if (!s.started) {
+        const dist = Math.abs(e.clientX - s.startX) + Math.abs(e.clientY - s.startY);
+        if (s.pointerType === "mouse") { if (dist > 6) liftCard(); }
+        else if (dist > 12) { clearTimeout(s.timer); sessionRef.current = null; } // a scroll, not a drag
+        return;
+      }
+      moveClone(e.clientX, e.clientY);
+      const col = columnAt(e.clientX, e.clientY);
+      setOverStage((prev) => (prev === col ? prev : col));
+    };
+    const onTouchMove = (e) => { if (sessionRef.current?.started) e.preventDefault(); };
+    const onUp = () => {
+      const s = sessionRef.current;
+      if (s) {
+        clearTimeout(s.timer);
+        if (s.started) {
+          const target = columnAt(posRef.current.x, posRef.current.y);
+          if (target && target !== s.status) moveBooking(s.id, target);
+        }
+      }
+      sessionRef.current = null;
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = 0;
+      setDragId(null);
+      setDragCard(null);
+      setOverStage(null);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    window.addEventListener("touchmove", onTouchMove, { passive: false });
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      window.removeEventListener("touchmove", onTouchMove);
+      cancelAnimationFrame(rafRef.current);
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const startPress = (e, b) => {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    if (e.target.closest("[data-no-drag]")) return; // delete button / stage menu stay tappable
+    posRef.current = { x: e.clientX, y: e.clientY };
+    const s = {
+      id: b.id, status: b.status, label: b.vehicle_reg,
+      sub: `${b.vehicle_make} ${b.vehicle_model}`,
+      startX: e.clientX, startY: e.clientY, pointerType: e.pointerType,
+      started: false, timer: 0,
+    };
+    sessionRef.current = s;
+    if (e.pointerType !== "mouse") s.timer = setTimeout(liftCard, 180);
+  };
+
   return (
     <>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
@@ -107,64 +227,98 @@ const PipelineTab = ({ bookings, stages, packages, settings }) => {
         ))}
       </div>
 
-      <div className="overflow-x-auto pb-4">
+      <p className="text-[11px] text-gray-500 mb-4 -mt-3">
+        Drag a card to move it between stages — on a phone, press and hold a card first, then drag (or use the stage menu on each card). Swipe the board sideways to see every stage.
+      </p>
+
+      <div ref={boardRef} className="overflow-x-auto pb-4">
         <div className="flex gap-4 min-w-max">
-          {stages.map((stage) => (
-            <div
-              key={stage.id}
-              className={`w-72 flex-shrink-0 p-2 transition-colors ${
-                dropZone === stage.name ? "border border-dashed border-white/30 bg-white/3" : "border border-transparent"
-              }`}
-              onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }}
-              onDrop={(e) => {
-                e.preventDefault();
-                const id = e.dataTransfer.getData("bookingId");
-                if (id) moveBooking(Number(id), stage.name);
-                setDropZone(null);
-              }}
-              onDragEnter={() => setDropZone(stage.name)}
-              onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setDropZone(null); }}
-            >
-              <div className="text-[11px] font-bold text-gray-500 uppercase mb-4 pl-1 border-l-2 border-white/20 select-none">
-                {stage.name} <span className="text-gray-700">({grouped[stage.name]?.length || 0})</span>
-              </div>
-              <div className="space-y-3">
-                {grouped[stage.name]?.map((b) => {
-                  const pkg = packages.find((p) => p.id === b.package_id);
-                  return (
-                    <div
-                      key={b.id}
-                      draggable
-                      onDragStart={(e) => e.dataTransfer.setData("bookingId", b.id.toString())}
-                      className="bg-black border border-white/5 p-4 hover:border-white/25 transition-all cursor-grab active:cursor-grabbing group"
-                    >
-                      <div className="flex justify-between items-start mb-1.5">
-                        <span className="text-white font-medium text-sm font-mono">{b.vehicle_reg}</span>
-                        <button
-                          onClick={() => deleteBooking(b.id)}
-                          className="text-gray-700 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
-                          title="Delete booking"
-                        >
-                          <Trash2 size={12} />
-                        </button>
+          {stages.map((stage) => {
+            const isOver = overStage === stage.name;
+            return (
+              <div
+                key={stage.id}
+                data-stage={stage.name}
+                className={`w-72 flex-shrink-0 p-2 rounded-sm transition-colors ${
+                  isOver ? "border border-dashed border-white/40 bg-white/5" : "border border-transparent"
+                }`}
+              >
+                <div className="text-[11px] font-bold text-gray-500 uppercase mb-4 pl-1 border-l-2 border-white/20 select-none">
+                  {stage.name} <span className="text-gray-700">({grouped[stage.name]?.length || 0})</span>
+                </div>
+                <div className="space-y-3 min-h-[44px]">
+                  {grouped[stage.name]?.map((b) => {
+                    const pkg = packages.find((p) => p.id === b.package_id);
+                    return (
+                      <div
+                        key={b.id}
+                        onPointerDown={(e) => startPress(e, b)}
+                        className={`bg-black border p-4 transition-all group select-none cursor-grab active:cursor-grabbing ${
+                          dragId === b.id ? "opacity-30 border-white/40" : "border-white/5 hover:border-white/25"
+                        }`}
+                      >
+                        <div className="flex justify-between items-start mb-1.5">
+                          <span className="text-white font-medium text-sm font-mono">{b.vehicle_reg}</span>
+                          <button
+                            data-no-drag
+                            onClick={() => deleteBooking(b.id)}
+                            onPointerDown={(e) => e.stopPropagation()}
+                            className="text-gray-600 hover:text-red-500 opacity-60 group-hover:opacity-100 transition-opacity p-1 -m-1"
+                            title="Delete booking"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
+                        <div className="text-xs text-gray-400 mb-1">{b.vehicle_make} {b.vehicle_model}</div>
+                        {b.customer_name && <div className="text-[10px] text-gray-600 mb-2">{b.customer_name}</div>}
+                        <div className="text-[10px] text-gray-700 font-mono mb-2">{b.booking_date}</div>
+                        {pkg && <Badge type="neutral">{pkg.name}</Badge>}
+
+                        {isTouch && (
+                          <select
+                            data-no-drag
+                            value={b.status}
+                            onChange={(e) => moveBooking(b.id, e.target.value)}
+                            onPointerDown={(e) => e.stopPropagation()}
+                            className="mt-3 w-full bg-neutral-900 border border-white/15 text-gray-200 text-xs px-2 py-2 focus:outline-none focus:border-white/50"
+                            aria-label="Move this booking to another stage"
+                          >
+                            {stages.map((s) => <option key={s.id} value={s.name}>{s.name}</option>)}
+                          </select>
+                        )}
                       </div>
-                      <div className="text-xs text-gray-400 mb-1">{b.vehicle_make} {b.vehicle_model}</div>
-                      {b.customer_name && <div className="text-[10px] text-gray-600 mb-2">{b.customer_name}</div>}
-                      <div className="text-[10px] text-gray-700 font-mono mb-2">{b.booking_date}</div>
-                      {pkg && <Badge type="neutral">{pkg.name}</Badge>}
+                    );
+                  })}
+                  {(!grouped[stage.name] || grouped[stage.name].length === 0) && (
+                    <div className={`h-20 border border-dashed flex items-center justify-center text-xs select-none transition-colors ${
+                      isOver ? "border-white/30 text-gray-500" : "border-white/5 text-gray-800"
+                    }`}>
+                      {isOver ? "Drop here" : "Empty"}
                     </div>
-                  );
-                })}
-                {(!grouped[stage.name] || grouped[stage.name].length === 0) && (
-                  <div className="h-20 border border-dashed border-white/5 flex items-center justify-center text-gray-800 text-xs select-none">
-                    Empty
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
+
+      {/* Floating card that follows the pointer while dragging */}
+      {dragCard && (
+        <div
+          ref={cloneRef}
+          className="fixed left-0 top-0 z-[100] pointer-events-none w-64 bg-neutral-900 border border-white/40 p-4 shadow-2xl shadow-black/60"
+          style={{ transform: `translate(${posRef.current.x}px, ${posRef.current.y}px) translate(-50%, -130%)` }}
+        >
+          <div className="text-white font-medium text-sm font-mono">{dragCard.label}</div>
+          <div className="text-xs text-gray-400 mt-0.5">{dragCard.sub}</div>
+          {overStage && (
+            <div className="text-[10px] font-mono text-gray-300 mt-2 pt-2 border-t border-white/10 uppercase tracking-wider">
+              → {overStage}
+            </div>
+          )}
+        </div>
+      )}
     </>
   );
 };
